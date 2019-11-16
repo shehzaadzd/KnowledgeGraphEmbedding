@@ -28,6 +28,7 @@ class KGEModel(nn.Module):
         self.nrelation = nrelation
         self.hidden_dim = hidden_dim
         self.epsilon = 2.0
+        self.KB = KB
         
         self.gamma = nn.Parameter(
             torch.Tensor([gamma]), 
@@ -58,6 +59,7 @@ class KGEModel(nn.Module):
         )
         if model_name == "A2N":
             self.W = nn.Linear(self.entity_dim + self.relation_dim, self.entity_dim)
+            self.Ws = nn.Linear(self.entity_dim + self.entity_dim, self.entity_dim)
         if model_name == "FFN":
             # self.head_w = nn.Sequential(nn.Linear(self.entity_dim + self.relation_dim, self.entity_dim), nn.ReLU(),
             #                             nn.Linear(self.entity_dim, self.entity_dim))
@@ -88,25 +90,43 @@ class KGEModel(nn.Module):
         '''
 
         if mode == 'single':
-            batch_size, negative_sample_size = sample.size(0), 1
+
+
+
+            pos_sample, nbr_e, nbr_r, nbr_e_mask, nbr_r_mask = sample
+            batch_size, negative_sample_size = nbr_e.size(0), 1
+
+            no_of_nbrs = nbr_e.size(1)
             
             head = torch.index_select(
                 self.entity_embedding, 
                 dim=0, 
-                index=sample[:,0]
+                index=pos_sample[:,0]
             ).unsqueeze(1)
             
             relation = torch.index_select(
                 self.relation_embedding, 
                 dim=0, 
-                index=sample[:,1]
+                index=pos_sample[:,1]
             ).unsqueeze(1)
             
             tail = torch.index_select(
                 self.entity_embedding, 
                 dim=0, 
-                index=sample[:,2]
+                index=pos_sample[:,2]
             ).unsqueeze(1)
+
+            nbr_e_embeddings = torch.index_select(
+                self.entity_embedding,
+                dim=0,
+                index=nbr_e.view(-1)
+            ).view(batch_size, no_of_nbrs, -1)
+
+            nbr_r_embeddings = torch.index_select(
+                self.relation_embedding,
+                dim=0,
+                index=nbr_r.view(-1)
+            ).view(batch_size, no_of_nbrs, -1)
             
         elif mode == 'head-batch':
             tail_part, head_part = sample
@@ -154,8 +174,6 @@ class KGEModel(nn.Module):
                 index=nbr_r.view(-1)
             ).view(batch_size, no_of_nbrs, -1)
 
-            import pdb
-            pdb.set_trace()
             
             relation = torch.index_select(
                 self.relation_embedding,
@@ -178,11 +196,12 @@ class KGEModel(nn.Module):
             'ComplEx': self.ComplEx,
             'RotatE': self.RotatE,
             'pRotatE': self.pRotatE,
-            'FFN': self.FFN
+            'FFN': self.FFN,
+            'A2N': self.A2N
         }
         
         if self.model_name in model_func:
-            score = model_func[self.model_name](head, relation, tail, mode)
+            score = model_func[self.model_name](head, relation, tail, mode, nbr_e_embeddings, nbr_r_embeddings, nbr_e_mask, nbr_r_mask)
         else:
             raise ValueError('model %s not supported' % self.model_name)
         
@@ -326,17 +345,25 @@ class KGEModel(nn.Module):
         score = score.sum(dim = 2)
         return score
 
-    def A2N(self, head, relation, tail, mode):
-        if mode == 'head-batch':
-            e2r = torch.cat([tail, relation], dim=-1)
-            pe1 = self.head_w(e2r)
-            score = pe1 * head
-        else:
-            e1r = torch.cat([head, relation], dim=-1)
-            pe2 = self.tail_w(e1r)
-            score = pe2 * tail
+    def A2N(self, head, relation, tail, mode, nbr_e_embeddings, nbr_r_embeddings, nbr_e_mask, nbr_r_mask):
 
-        score = score.sum(dim = 2)
+
+        n = self.W(torch.cat([nbr_r_embeddings, nbr_e_embeddings], dim=-1))
+
+        a = ((head * relation) * n).sum(-1)
+        a_masked = a.masked_fill(nbr_e_mask, -99999.9)
+        p = a_masked.softmax(-1)
+        s = (p.unsqueeze(-1) * n ).sum(1)
+
+        s_final = self.Ws(torch.cat([head.squeeze(1), s], -1))
+
+
+
+        score = (s_final.unsqueeze(1) * relation) * tail
+
+        score = score.sum(dim=2)
+
+
         return score
 
     def RotatE(self, head, relation, tail, mode):
@@ -421,7 +448,7 @@ class KGEModel(nn.Module):
         else:
             negative_score = F.logsigmoid(-negative_score).mean(dim = 1)
 
-        positive_score = model(positive_sample)
+        positive_score = model((positive_sample, nbr_e, nbr_r, nbr_e_mask,  nbr_r_mask))
 
         positive_score = F.logsigmoid(positive_score).squeeze(dim = 1)
 
@@ -459,7 +486,7 @@ class KGEModel(nn.Module):
         return log
     
     @staticmethod
-    def test_step(model, test_triples, all_true_triples, args, candidate_entities=None, id2e = None, id2rel = None):
+    def test_step(model, test_triples, all_true_triples, args, candidate_entities=None, id2e = None, id2rel = None, KB=None):
         '''
         Evaluate the model on test or valid datasets
         '''
@@ -528,7 +555,7 @@ class KGEModel(nn.Module):
                         all_true_triples,
                         args.nentity,
                         args.nrelation,
-                        'tail-batch'
+                        'tail-batch', KB=KB
                     ),
                     batch_size=args.test_batch_size,
                     num_workers=1,#max(1, args.cpu_num//2),
@@ -550,15 +577,20 @@ class KGEModel(nn.Module):
                 per_relation_scores = defaultdict(int)
                 total_ = defaultdict(int)
                 for test_dataset in test_dataset_list:
-                    for positive_sample, negative_sample, filter_bias, mode in test_dataset:
+                    for test_example in test_dataset:
+                        positive_sample, negative_sample, filter_bias, mode, nbr_e, nbr_r, nbr_e_mask, nbr_r_mask = test_example
                         if args.cuda:
                             positive_sample = positive_sample.cuda()
                             negative_sample = negative_sample.cuda()
                             filter_bias = filter_bias.cuda()
+                            nbr_e = nbr_e.cuda()
+                            nbr_e_mask = nbr_e_mask.cuda()
+                            nbr_r = nbr_r.cuda()
+                            nbr_r_mask = nbr_r_mask.cuda()
 
                         batch_size = positive_sample.size(0)
 
-                        score = model((positive_sample, negative_sample), mode)
+                        score = model((positive_sample, negative_sample, nbr_e, nbr_r, nbr_e_mask,  nbr_r_mask), mode)
                         score += filter_bias
                         #Explicitly sort all the entities to ensure that there is no test exposure bias
                         argsort = torch.argsort(score, dim = 1, descending=True)
@@ -601,9 +633,9 @@ class KGEModel(nn.Module):
             for metric in logs[0].keys():
                 metrics[metric] = sum([log[metric] for log in logs])/len(logs)
 
-            with open("/home/shdhulia/per_relation_score.txt", "w") as ofile:
-                for r, count in total_.items():
-                    score = per_relation_scores[r]
-                    ofile.write("{}\t{}\t{}\n".format(id2rel[r], score, count))
+            # with open("/home/shdhulia/per_relation_score.txt", "w") as ofile:
+            #     for r, count in total_.items():
+            #         score = per_relation_scores[r]
+            #         ofile.write("{}\t{}\t{}\n".format(id2rel[r], score, count))
 
         return metrics

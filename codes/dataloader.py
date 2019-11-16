@@ -178,6 +178,7 @@ class TestDataset(Dataset):
         self.nentity = nentity
         self.nrelation = nrelation
         self.mode = mode
+        self.max_nbrs = 100
         self.use_neighbors = True
         if KB == None:
             self.use_neighbors = False
@@ -237,17 +238,18 @@ class TestDataset(Dataset):
             all_neighboring_entities = [_[4] for _ in data]
             all_neighboring_lens = [len(_[4]) for _ in data]
             all_neighboring_relations = [_[5] for _ in data]
-            neighboring_r = np.zeros(len(all_neighboring_entities), max(all_neighboring_lens))  # B, max_nbrs
-            neighboring_r_mask = np.ones(len(all_neighboring_entities), max(all_neighboring_lens))  # B, max_nbrs
-            neighboring_e = np.zeros(len(all_neighboring_entities), max(all_neighboring_lens))  # B, max_nbrs
-            neighboring_e_mask = np.ones(len(all_neighboring_entities), max(all_neighboring_lens))  # B, max_nbrs
+            neighboring_r = np.zeros((len(all_neighboring_entities), max(all_neighboring_lens)))  # B, max_nbrs
+            neighboring_r_mask = np.ones((len(all_neighboring_entities), max(all_neighboring_lens)))  # B, max_nbrs
+            neighboring_e = np.zeros((len(all_neighboring_entities), max(all_neighboring_lens)))  # B, max_nbrs
+            neighboring_e_mask = np.ones((len(all_neighboring_entities), max(all_neighboring_lens)))  # B, max_nbrs
             for b in range(len(all_neighboring_entities)):
-                for nbr_count, nbr_e in all_neighboring_entities[b]:
+
+                for nbr_count, nbr_e in enumerate(all_neighboring_entities[b]):
                     neighboring_e[b, nbr_count] = nbr_e
-                    neighboring_e_mask[b, nbr_count] = 1
+                    neighboring_e_mask[b, nbr_count] = 0
 
                     neighboring_r[b, nbr_count] = all_neighboring_relations[b][nbr_count]
-                    neighboring_r_mask[b, nbr_count] = 1
+                    neighboring_r_mask[b, nbr_count] = 0
 
                     neighboring_e = torch.LongTensor(neighboring_e)
                     neighboring_e_mask = torch.ByteTensor(neighboring_e_mask)
