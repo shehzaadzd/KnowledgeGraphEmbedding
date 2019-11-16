@@ -18,7 +18,9 @@ from torch.utils.data import DataLoader
 from model import KGEModel
 
 from dataloader import TrainDataset
-from dataloader import BidirectionalOneShotIterator
+from dataloader import BidirectionalOneShotIterator, OneShotIterator
+from kb import KB, Dictionary
+from collections import defaultdict
 
 def parse_args(args=None):
     parser = argparse.ArgumentParser(
@@ -67,7 +69,8 @@ def parse_args(args=None):
     
     parser.add_argument('--nentity', type=int, default=0, help='DO NOT MANUALLY SET')
     parser.add_argument('--nrelation', type=int, default=0, help='DO NOT MANUALLY SET')
-    
+    parser.add_argument('--rerank_minerva', type=int, default=0, help='DO NOT MANUALLY SET')
+
     return parser.parse_args(args)
 
 def override_config(args):
@@ -157,7 +160,8 @@ def log_metrics(mode, step, metrics):
     for metric in metrics:
         logging.info('%s %s at step %d: %f' % (mode, metric, step, metrics[metric]))
         
-        
+
+
 def main(args):
     if (not args.do_train) and (not args.do_valid) and (not args.do_test):
         raise ValueError('one of train/val/test mode must be choosed.')
@@ -175,18 +179,24 @@ def main(args):
     
     # Write logs to checkpoint and console
     set_logger(args)
-    
+
+
     with open(os.path.join(args.data_path, 'entities.dict')) as fin:
         entity2id = dict()
+        id2entity = dict()
         for line in fin:
             eid, entity = line.strip().split('\t')
             entity2id[entity] = int(eid)
+            id2entity[int(eid)] = entity
+
 
     with open(os.path.join(args.data_path, 'relations.dict')) as fin:
         relation2id = dict()
+        id2relationship = dict()
         for line in fin:
             rid, relation = line.strip().split('\t')
             relation2id[relation] = int(rid)
+            id2relationship[int(rid)] = relation
     
     # Read regions for Countries S* datasets
     if args.countries:
@@ -196,6 +206,11 @@ def main(args):
                 region = line.strip()
                 regions.append(entity2id[region])
         args.regions = regions
+
+    e_vocab = Dictionary(tok2ind = entity2id, ind2tok = id2entity)
+    r_vocab = Dictionary(tok2ind = relation2id, ind2tok = id2relationship)
+    ## TODO: add graph file
+    graph = KB(os.path.join(args.data_path, 'train.txt'), e_vocab = e_vocab, r_vocab = r_vocab )
 
     nentity = len(entity2id)
     nrelation = len(relation2id)
@@ -214,6 +229,16 @@ def main(args):
     logging.info('#valid: %d' % len(valid_triples))
     test_triples = read_triple(os.path.join(args.data_path, 'test.txt'), entity2id, relation2id)
     logging.info('#test: %d' % len(test_triples))
+    candidate_entities = None
+    if args.rerank_minerva:
+        candidate_entities = {}
+        with open("/home/shdhulia/minerva_answers/fb.txt") as candidate_file:
+            for line in candidate_file:
+                pt = line.strip().split("\t")
+                e1 = entity2id[pt[0]]
+                r = relation2id[pt[1]]
+                predicted_es = set([entity2id[p] for p in pt[2:] if p in entity2id])
+                candidate_entities[(e1,r)] = set(predicted_es)
     
     #All true triples
     all_true_triples = train_triples + valid_triples + test_triples
@@ -237,24 +262,25 @@ def main(args):
     
     if args.do_train:
         # Set training dataloader iterator
-        train_dataloader_head = DataLoader(
-            TrainDataset(train_triples, nentity, nrelation, args.negative_sample_size, 'head-batch'), 
-            batch_size=args.batch_size,
-            shuffle=True, 
-            num_workers=max(1, args.cpu_num//2),
-            collate_fn=TrainDataset.collate_fn
-        )
+        # train_dataloader_head = DataLoader(
+        #     TrainDataset(train_triples, nentity, nrelation, args.negative_sample_size, 'head-batch'),
+        #     batch_size=args.batch_size,
+        #     shuffle=True,
+        #     num_workers=max(1, args.cpu_num//2),
+        #     collate_fn=TrainDataset.collate_fn
+        # )
         
         train_dataloader_tail = DataLoader(
-            TrainDataset(train_triples, nentity, nrelation, args.negative_sample_size, 'tail-batch'), 
+            TrainDataset(train_triples, nentity, nrelation, args.negative_sample_size, 'tail-batch', KB = graph),
             batch_size=args.batch_size,
             shuffle=True, 
             num_workers=max(1, args.cpu_num//2),
             collate_fn=TrainDataset.collate_fn
         )
         
-        train_iterator = BidirectionalOneShotIterator(train_dataloader_head, train_dataloader_tail)
-        
+        # train_iterator = BidirectionalOneShotIterator(train_dataloader_head, train_dataloader_tail)
+        train_iterator = OneShotIterator(train_dataloader_tail)
+
         # Set training configuration
         current_learning_rate = args.learning_rate
         optimizer = torch.optim.Adam(
@@ -284,7 +310,7 @@ def main(args):
     
     logging.info('Start Training...')
     logging.info('init_step = %d' % init_step)
-    logging.info('learning_rate = %d' % current_learning_rate)
+    # logging.info('learning_rate = %d' % current_learning_rate)
     logging.info('batch_size = %d' % args.batch_size)
     logging.info('negative_adversarial_sampling = %d' % args.negative_adversarial_sampling)
     logging.info('hidden_dim = %d' % args.hidden_dim)
@@ -343,12 +369,17 @@ def main(args):
         
     if args.do_valid:
         logging.info('Evaluating on Valid Dataset...')
-        metrics = kge_model.test_step(kge_model, valid_triples, all_true_triples, args)
+        metrics = kge_model.test_step(kge_model, valid_triples, all_true_triples, args,id2e=id2entity, id2rel=id2relationship)
         log_metrics('Valid', step, metrics)
     
+    # if args.do_test:
+    #     logging.info('Evaluating on Test Dataset...')
+    #     metrics = kge_model.test_step(kge_model, test_triples, all_true_triples, args)
+    #     log_metrics('Test', step, metrics)
+
     if args.do_test:
         logging.info('Evaluating on Test Dataset...')
-        metrics = kge_model.test_step(kge_model, test_triples, all_true_triples, args)
+        metrics = kge_model.test_step(kge_model, test_triples, all_true_triples, args, candidate_entities, id2e=id2entity, id2rel=id2relationship)
         log_metrics('Test', step, metrics)
     
     if args.evaluate_train:
