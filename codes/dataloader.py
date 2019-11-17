@@ -8,6 +8,49 @@ import numpy as np
 import torch
 
 from torch.utils.data import Dataset
+from torch.utils.data import Sampler
+
+import math
+
+
+class BucketBatchSampler(Sampler):
+    r"""Wraps another sampler to yield a mini-batch of indices.
+
+    Args:
+        sampler (Sampler): Base sampler.
+        batch_size (int): Size of mini-batch.
+        drop_last (bool): If ``True``, the sampler will drop the last batch if
+            its size would be less than ``batch_size``
+
+    Example:
+        # >>> list(BatchSampler(SequentialSampler(range(10)), batch_size=3, drop_last=False))
+        [[0, 1, 2], [3, 4, 5], [6, 7, 8], [9]]
+        # >>> list(BatchSampler(SequentialSampler(range(10)), batch_size=3, drop_last=True))
+        [[0, 1, 2], [3, 4, 5], [6, 7, 8]]
+    """
+
+    def __init__(self, sampler, batch_size, drop_last):
+
+        self.sampler = sampler
+        self.batch_size = batch_size
+        self.drop_last = drop_last
+
+    def __iter__(self):
+        batch = []
+        for idx in self.sampler:
+            batch.append(idx)
+            if len(batch) == self.batch_size:
+                yield batch
+                batch = []
+        if len(batch) > 0 and not self.drop_last:
+            yield batch
+
+    def __len__(self):
+        if self.drop_last:
+            return len(self.sampler) // self.batch_size
+        else:
+            return (len(self.sampler) + self.batch_size - 1) // self.batch_size
+
 
 class TrainDataset(Dataset):
 
@@ -22,10 +65,12 @@ class TrainDataset(Dataset):
         self.count = self.count_frequency(triples)
         self.true_head, self.true_tail = self.get_true_head_and_tail(self.triples)
         self.KB = KB
-        self.max_nbrs = 100
+        self.max_nbrs = 500
         self.use_neighbors = True
         if KB == None:
             self.use_neighbors = False
+
+        self.triples = sorted(self.triples, key = lambda x: -len(self.KB.e1_view[x[0]]) )
 
         self.__getitem__(5)
 
@@ -104,10 +149,10 @@ class TrainDataset(Dataset):
             all_neighboring_entities = [_[4] for _ in data]
             all_neighboring_lens = [len(_[4]) for _ in data]
             all_neighboring_relations = [_[5] for _ in data]
-            neighboring_r = np.zeros((len(all_neighboring_entities), max(all_neighboring_lens))) #B, max_nbrs
-            neighboring_r_mask = np.ones((len(all_neighboring_entities), max(all_neighboring_lens))) #B, max_nbrs
-            neighboring_e = np.zeros((len(all_neighboring_entities), max(all_neighboring_lens))) #B, max_nbrs
-            neighboring_e_mask = np.ones((len(all_neighboring_entities), max(all_neighboring_lens)))  # B, max_nbrs
+            neighboring_r = np.zeros((len(all_neighboring_entities), max(all_neighboring_lens)+1)) #B, max_nbrs
+            neighboring_r_mask = np.ones((len(all_neighboring_entities), max(all_neighboring_lens)+1)) #B, max_nbrs
+            neighboring_e = np.zeros((len(all_neighboring_entities), max(all_neighboring_lens)+1)) #B, max_nbrs
+            neighboring_e_mask = np.ones((len(all_neighboring_entities), max(all_neighboring_lens)+1))  # B, max_nbrs
             for b in range(len(all_neighboring_entities)):
 
                 for nbr_count, nbr_e in enumerate(all_neighboring_entities[b]):
@@ -117,10 +162,10 @@ class TrainDataset(Dataset):
                     neighboring_r[b, nbr_count] = all_neighboring_relations[b][nbr_count]
                     neighboring_r_mask[b, nbr_count] =  0
 
-                    neighboring_e = torch.LongTensor(neighboring_e)
-                    neighboring_e_mask = torch.ByteTensor(neighboring_e_mask)
-                    neighboring_r = torch.LongTensor(neighboring_r)
-                    neighboring_r_mask = torch.ByteTensor(neighboring_r_mask)
+            neighboring_e = torch.LongTensor(neighboring_e)
+            neighboring_e_mask = torch.ByteTensor(neighboring_e_mask)
+            neighboring_r = torch.LongTensor(neighboring_r)
+            neighboring_r_mask = torch.ByteTensor(neighboring_r_mask)
             return positive_sample, negative_sample, subsample_weight, mode, neighboring_e, neighboring_r, neighboring_e_mask, neighboring_r_mask
         else:
             return positive_sample, negative_sample, subsample_weight, mode
@@ -169,7 +214,10 @@ class TrainDataset(Dataset):
 
         return true_head, true_tail
 
-    
+
+
+
+
 class TestDataset(Dataset):
     def __init__(self, triples, all_true_triples, nentity, nrelation, mode, KB=None):
         self.len = len(triples)
@@ -178,8 +226,10 @@ class TestDataset(Dataset):
         self.nentity = nentity
         self.nrelation = nrelation
         self.mode = mode
-        self.max_nbrs = 100
+        self.max_nbrs = 500
         self.use_neighbors = True
+        self.triples = sorted(self.triples, key = lambda x: -len(KB.e1_view[x[0]]) )
+
         if KB == None:
             self.use_neighbors = False
         else:
@@ -190,10 +240,12 @@ class TestDataset(Dataset):
     
     def __getitem__(self, idx):
         head, relation, tail = self.triples[idx]
+
+        neighboring_relations = []
+        neighboring_entities = []
         if self.use_neighbors:
             pos_neighbors = self.KB.e1_view[head]
-            neighboring_relations = []
-            neighboring_entities = []
+
             count = 0
             for r,e2 in pos_neighbors:
                 neighboring_entities.append(e2)
@@ -201,8 +253,6 @@ class TestDataset(Dataset):
                 count += 1
                 if count >= self.max_nbrs:
                     break
-
-
 
         if self.mode == 'head-batch':
             tmp = [(0, rand_head) if (rand_head, relation, tail) not in self.triple_set
@@ -224,7 +274,6 @@ class TestDataset(Dataset):
         if self.use_neighbors:
             return positive_sample, negative_sample, filter_bias, self.mode, neighboring_entities, neighboring_relations
         else:
-            
             return positive_sample, negative_sample, filter_bias, self.mode
 
     
@@ -234,14 +283,14 @@ class TestDataset(Dataset):
         negative_sample = torch.stack([_[1] for _ in data], dim=0)
         filter_bias = torch.stack([_[2] for _ in data], dim=0)
         mode = data[0][3]
-        if len(data) > 4:
+        if len(data[0]) > 4:
             all_neighboring_entities = [_[4] for _ in data]
             all_neighboring_lens = [len(_[4]) for _ in data]
             all_neighboring_relations = [_[5] for _ in data]
-            neighboring_r = np.zeros((len(all_neighboring_entities), max(all_neighboring_lens)))  # B, max_nbrs
-            neighboring_r_mask = np.ones((len(all_neighboring_entities), max(all_neighboring_lens)))  # B, max_nbrs
-            neighboring_e = np.zeros((len(all_neighboring_entities), max(all_neighboring_lens)))  # B, max_nbrs
-            neighboring_e_mask = np.ones((len(all_neighboring_entities), max(all_neighboring_lens)))  # B, max_nbrs
+            neighboring_r = np.zeros((len(all_neighboring_entities), max(all_neighboring_lens)+1))  # B, max_nbrs
+            neighboring_r_mask = np.ones((len(all_neighboring_entities), max(all_neighboring_lens)+1))  # B, max_nbrs
+            neighboring_e = np.zeros((len(all_neighboring_entities), max(all_neighboring_lens)+1))  # B, max_nbrs
+            neighboring_e_mask = np.ones((len(all_neighboring_entities), max(all_neighboring_lens)+1))  # B, max_nbrs
             for b in range(len(all_neighboring_entities)):
 
                 for nbr_count, nbr_e in enumerate(all_neighboring_entities[b]):
@@ -251,13 +300,12 @@ class TestDataset(Dataset):
                     neighboring_r[b, nbr_count] = all_neighboring_relations[b][nbr_count]
                     neighboring_r_mask[b, nbr_count] = 0
 
-                    neighboring_e = torch.LongTensor(neighboring_e)
-                    neighboring_e_mask = torch.ByteTensor(neighboring_e_mask)
-                    neighboring_r = torch.LongTensor(neighboring_r)
-                    neighboring_r_mask = torch.ByteTensor(neighboring_r_mask)
+            neighboring_e = torch.LongTensor(neighboring_e)
+            neighboring_e_mask = torch.ByteTensor(neighboring_e_mask)
+            neighboring_r = torch.LongTensor(neighboring_r)
+            neighboring_r_mask = torch.ByteTensor(neighboring_r_mask)
             return positive_sample, negative_sample, filter_bias, mode, neighboring_e, neighboring_r, neighboring_e_mask, neighboring_r_mask
         else:
-
 
             return positive_sample, negative_sample, filter_bias, mode
 

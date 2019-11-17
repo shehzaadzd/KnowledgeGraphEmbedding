@@ -49,3 +49,7 @@ bash run.sh train DistMult countries_S1 0 0 512 64 2000 1.0 1.0 0.000002 40000 8
 bash run.sh train DistMult countries_S2 0 0 512 64 2000 1.0 1.0 0.000002 40000 8 -r 0.0005 --countries
 bash run.sh train DistMult countries_S3 0 0 512 64 2000 1.0 1.0 0.000002 40000 8 -r 0.0005 --countries
 #
+
+
+#A2N:
+bash run.sh train A2N FB15k-237 0 0 1024 2000 512 24.0 1.0 0.0001 150000 16

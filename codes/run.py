@@ -62,8 +62,8 @@ def parse_args(args=None):
     parser.add_argument('--max_steps', default=100000, type=int)
     parser.add_argument('--warm_up_steps', default=None, type=int)
     
-    parser.add_argument('--save_checkpoint_steps', default=10000, type=int)
-    parser.add_argument('--valid_steps', default=10000, type=int)
+    parser.add_argument('--save_checkpoint_steps', default=1000, type=int)
+    parser.add_argument('--valid_steps', default=1000, type=int)
     parser.add_argument('--log_steps', default=100, type=int, help='train log every xx steps')
     parser.add_argument('--test_log_steps', default=1000, type=int, help='valid/test log every xx steps')
     
@@ -273,7 +273,7 @@ def main(args):
         train_dataloader_tail = DataLoader(
             TrainDataset(train_triples, nentity, nrelation, args.negative_sample_size, 'tail-batch', KB = graph),
             batch_size=args.batch_size,
-            shuffle=True, 
+            shuffle=False,
             num_workers=max(1, args.cpu_num//2),
             collate_fn=TrainDataset.collate_fn
         )
@@ -327,6 +327,7 @@ def main(args):
         training_logs = []
         
         #Training Loop
+        best_mrr = 0.0
         for step in range(init_step, args.max_steps):
             
             log = kge_model.train_step(kge_model, optimizer, train_iterator, args)
@@ -342,32 +343,38 @@ def main(args):
                 )
                 warm_up_steps = warm_up_steps * 3
             
-            if step % args.save_checkpoint_steps == 0:
-                save_variable_list = {
-                    'step': step, 
-                    'current_learning_rate': current_learning_rate,
-                    'warm_up_steps': warm_up_steps
-                }
-                save_model(kge_model, optimizer, save_variable_list, args)
-                
             if step % args.log_steps == 0:
                 metrics = {}
                 for metric in training_logs[0].keys():
                     metrics[metric] = sum([log[metric] for log in training_logs])/len(training_logs)
                 log_metrics('Training average', step, metrics)
                 training_logs = []
-                
+
+
+
             if args.do_valid and step % args.valid_steps == 0:
                 logging.info('Evaluating on Valid Dataset...')
                 metrics = kge_model.test_step(kge_model, valid_triples, all_true_triples, args, KB=graph)
                 log_metrics('Valid', step, metrics)
+
+                if best_mrr < metrics["MRR"]:
+                    save_variable_list = {
+                        'step': step,
+                        'current_learning_rate': current_learning_rate,
+                        'warm_up_steps': warm_up_steps
+                    }
+                    save_model(kge_model, optimizer, save_variable_list, args)
+
+
+                
+
         
-        save_variable_list = {
-            'step': step, 
-            'current_learning_rate': current_learning_rate,
-            'warm_up_steps': warm_up_steps
-        }
-        save_model(kge_model, optimizer, save_variable_list, args)
+        # save_variable_list = {
+        #     'step': step,
+        #     'current_learning_rate': current_learning_rate,
+        #     'warm_up_steps': warm_up_steps
+        # }
+        # save_model(kge_model, optimizer, save_variable_list, args)
         
     if args.do_valid:
         logging.info('Evaluating on Valid Dataset...')
@@ -381,7 +388,7 @@ def main(args):
 
     if args.do_test:
         logging.info('Evaluating on Test Dataset...')
-        metrics = kge_model.test_step(kge_model, test_triples, all_true_triples, args, candidate_entities, id2e=id2entity, id2rel=id2relationship, graph=KB)
+        metrics = kge_model.test_step(kge_model, test_triples, all_true_triples, args, candidate_entities=None, id2e=id2entity, id2rel=id2relationship, KB=graph)
         log_metrics('Test', step, metrics)
     
     if args.evaluate_train:

@@ -578,6 +578,9 @@ class KGEModel(nn.Module):
                 total_ = defaultdict(int)
                 for test_dataset in test_dataset_list:
                     for test_example in test_dataset:
+                        if len(test_example) < 8:
+                            import pdb
+                            pdb.set_trace()
                         positive_sample, negative_sample, filter_bias, mode, nbr_e, nbr_r, nbr_e_mask, nbr_r_mask = test_example
                         if args.cuda:
                             positive_sample = positive_sample.cuda()
@@ -621,7 +624,7 @@ class KGEModel(nn.Module):
                                 'HITS@1': 1.0 if ranking <= 1 else 0.0,
                                 'HITS@3': 1.0 if ranking <= 3 else 0.0,
                                 'HITS@10': 1.0 if ranking <= 10 else 0.0,
-                                'HITS@100': 1.0 if ranking <= 100 else 0.0,
+                                'HITS@20': 1.0 if ranking <= 20 else 0.0,
                             })
 
                         if step % args.test_log_steps == 0:
