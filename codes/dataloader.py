@@ -54,7 +54,7 @@ class BucketBatchSampler(Sampler):
 
 class TrainDataset(Dataset):
 
-    def __init__(self, triples, nentity, nrelation, negative_sample_size, mode, KB = None):
+    def __init__(self, triples, nentity, nrelation, negative_sample_size, mode, KB = None, max_nbrs=200, sort_by_nbrs = False):
         self.len = len(triples)
         self.triples = triples
         self.triple_set = set(triples)
@@ -65,12 +65,12 @@ class TrainDataset(Dataset):
         self.count = self.count_frequency(triples)
         self.true_head, self.true_tail = self.get_true_head_and_tail(self.triples)
         self.KB = KB
-        self.max_nbrs = 500
+        self.max_nbrs = max_nbrs
         self.use_neighbors = True
         if KB == None:
             self.use_neighbors = False
-
-        self.triples = sorted(self.triples, key = lambda x: -len(self.KB.e1_view[x[0]]) )
+        if sort_by_nbrs:
+            self.triples = sorted(self.triples, key = lambda x: -len(self.KB.e1_view[x[0]]) )
 
         self.__getitem__(5)
 
@@ -91,7 +91,12 @@ class TrainDataset(Dataset):
             neighboring_relations = []
             neighboring_entities = []
             count = 0
-            for r,e2 in pos_neighbors:
+            if len(pos_neighbors) > self.max_nbrs:
+                nbrs_idx = np.random.choice(range(len(pos_neighbors)), self.max_nbrs)
+                nbrs = [pos_neighbors[i] for i in nbrs_idx]
+            else:
+                nbrs = pos_neighbors
+            for r,e2 in nbrs:
                 neighboring_entities.append(e2)
                 neighboring_relations.append(r)
                 count += 1
@@ -219,14 +224,14 @@ class TrainDataset(Dataset):
 
 
 class TestDataset(Dataset):
-    def __init__(self, triples, all_true_triples, nentity, nrelation, mode, KB=None):
+    def __init__(self, triples, all_true_triples, nentity, nrelation, mode, KB=None, max_nbrs = 200):
         self.len = len(triples)
         self.triple_set = set(all_true_triples)
         self.triples = triples
         self.nentity = nentity
         self.nrelation = nrelation
         self.mode = mode
-        self.max_nbrs = 500
+        self.max_nbrs = max_nbrs
         self.use_neighbors = True
         self.triples = sorted(self.triples, key = lambda x: -len(KB.e1_view[x[0]]) )
 

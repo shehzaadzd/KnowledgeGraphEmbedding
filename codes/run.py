@@ -70,6 +70,8 @@ def parse_args(args=None):
     parser.add_argument('--nentity', type=int, default=0, help='DO NOT MANUALLY SET')
     parser.add_argument('--nrelation', type=int, default=0, help='DO NOT MANUALLY SET')
     parser.add_argument('--rerank_minerva', type=int, default=0, help='DO NOT MANUALLY SET')
+    parser.add_argument('--max_nbrs', type=int, default=200)
+    parser.add_argument('--sort_by_nbrs', type=int, default=0)
 
     return parser.parse_args(args)
 
@@ -210,7 +212,7 @@ def main(args):
     e_vocab = Dictionary(tok2ind = entity2id, ind2tok = id2entity)
     r_vocab = Dictionary(tok2ind = relation2id, ind2tok = id2relationship)
     ## TODO: add graph file
-    graph = KB(os.path.join(args.data_path, 'train.txt'), e_vocab = e_vocab, r_vocab = r_vocab )
+    graph = KB(os.path.join(args.data_path, 'graph.txt'), e_vocab = e_vocab, r_vocab = r_vocab )
 
     nentity = len(entity2id)
     nrelation = len(relation2id)
@@ -271,9 +273,9 @@ def main(args):
         # )
         
         train_dataloader_tail = DataLoader(
-            TrainDataset(train_triples, nentity, nrelation, args.negative_sample_size, 'tail-batch', KB = graph),
+            TrainDataset(train_triples, nentity, nrelation, args.negative_sample_size, 'tail-batch', KB = graph, max_nbrs=args.max_nbrs, sort_by_nbrs=args.sort_by_nbrs),
             batch_size=args.batch_size,
-            shuffle=False,
+            shuffle=False if args.sort_by_nbrs else True,
             num_workers=max(1, args.cpu_num//2),
             collate_fn=TrainDataset.collate_fn
         )

@@ -60,6 +60,7 @@ class KGEModel(nn.Module):
         if model_name == "A2N":
             self.W = nn.Linear(self.entity_dim + self.relation_dim, self.entity_dim)
             self.Ws = nn.Linear(self.entity_dim + self.entity_dim, self.entity_dim)
+            self.dropout = nn.Dropout(0.3)
         if model_name == "FFN":
             # self.head_w = nn.Sequential(nn.Linear(self.entity_dim + self.relation_dim, self.entity_dim), nn.ReLU(),
             #                             nn.Linear(self.entity_dim, self.entity_dim))
@@ -347,8 +348,14 @@ class KGEModel(nn.Module):
 
     def A2N(self, head, relation, tail, mode, nbr_e_embeddings, nbr_r_embeddings, nbr_e_mask, nbr_r_mask):
 
+        nbr_e_embeddings = self.dropout(nbr_e_embeddings)
+        nbr_r_embeddings = self.dropout(nbr_r_embeddings)
+        head = self.dropout(head)
+        tail = self.dropout(tail)
+        relation = self.dropout(relation)
 
         n = self.W(torch.cat([nbr_r_embeddings, nbr_e_embeddings], dim=-1))
+        n = self.dropout(n)
 
         a = ((head * relation) * n).sum(-1)
         a_masked = a.masked_fill(nbr_e_mask, -99999.9)
@@ -356,6 +363,7 @@ class KGEModel(nn.Module):
         s = (p.unsqueeze(-1) * n ).sum(1)
 
         s_final = self.Ws(torch.cat([head.squeeze(1), s], -1))
+        s_final = self.dropout(s_final)
 
 
 
@@ -555,7 +563,7 @@ class KGEModel(nn.Module):
                         all_true_triples,
                         args.nentity,
                         args.nrelation,
-                        'tail-batch', KB=KB
+                        'tail-batch', KB=KB, max_nbrs=args.max_nbrs
                     ),
                     batch_size=args.test_batch_size,
                     num_workers=1,#max(1, args.cpu_num//2),

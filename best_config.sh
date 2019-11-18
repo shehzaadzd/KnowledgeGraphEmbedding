@@ -53,3 +53,6 @@ bash run.sh train DistMult countries_S3 0 0 512 64 2000 1.0 1.0 0.000002 40000 8
 
 #A2N:
 bash run.sh train A2N FB15k-237 0 0 1024 2000 512 24.0 1.0 0.0001 150000 16
+
+
+python -W ignore  -u codes/run.py --do_train --cuda --do_valid --do_test --data_path data/FB15k-237 --model A2N -n 2000 -b 1024 -d 512  -g 24.0 -a 1.0 -adv -lr 0.001 --max_steps 100000  -save models/A2N --test_batch_size 16 --max_nbrs 200
