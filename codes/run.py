@@ -69,7 +69,7 @@ def parse_args(args=None):
     
     parser.add_argument('--nentity', type=int, default=0, help='DO NOT MANUALLY SET')
     parser.add_argument('--nrelation', type=int, default=0, help='DO NOT MANUALLY SET')
-    parser.add_argument('--rerank_minerva', type=int, default=0, help='DO NOT MANUALLY SET')
+    parser.add_argument('--rerank_minerva', type=int, default=1, help='DO NOT MANUALLY SET')
 
     return parser.parse_args(args)
 
@@ -231,8 +231,9 @@ def main(args):
     logging.info('#test: %d' % len(test_triples))
     candidate_entities = None
     if args.rerank_minerva:
-        candidate_entities = {}
-        with open("/home/shdhulia/minerva_answers/fb.txt") as candidate_file:
+        candidate_entities = defaultdict(set)
+        with open("/home/shdhulia//Limits-of-Path-Reasoner/outputs/FB15K-237/thisone_test/all_answers.txt") as candidate_file:
+        # with open("/home/shdhulia/minerva_answers/fb.txt") as candidate_file:
             for line in candidate_file:
                 pt = line.strip().split("\t")
                 e1 = entity2id[pt[0]]
@@ -371,7 +372,7 @@ def main(args):
         
     if args.do_valid:
         logging.info('Evaluating on Valid Dataset...')
-        metrics = kge_model.test_step(kge_model, valid_triples, all_true_triples, args,id2e=id2entity, id2rel=id2relationship)
+        metrics = kge_model.test_step(kge_model, valid_triples, all_true_triples, args, candidate_entities,id2e=id2entity, id2rel=id2relationship)
         log_metrics('Valid', step, metrics)
     
     # if args.do_test:

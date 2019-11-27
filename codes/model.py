@@ -17,11 +17,10 @@ from sklearn.metrics import average_precision_score
 from torch.utils.data import DataLoader
 
 from dataloader import TestDataset, TestDataset_MINERVA
-from kb import  KB
 
 class KGEModel(nn.Module):
     def __init__(self, model_name, nentity, nrelation, hidden_dim, gamma, 
-                 double_entity_embedding=False, double_relation_embedding=False, KB = None):
+                 double_entity_embedding=False, double_relation_embedding=False):
         super(KGEModel, self).__init__()
         self.model_name = model_name
         self.nentity = nentity
@@ -33,7 +32,6 @@ class KGEModel(nn.Module):
             torch.Tensor([gamma]), 
             requires_grad=False
         )
-
         
         self.embedding_range = nn.Parameter(
             torch.Tensor([(self.gamma.item() + self.epsilon) / hidden_dim]), 
@@ -56,13 +54,7 @@ class KGEModel(nn.Module):
             a=-self.embedding_range.item(), 
             b=self.embedding_range.item()
         )
-        if model_name == "A2N":
-            self.W = nn.Linear(self.entity_dim + self.relation_dim, self.entity_dim)
-        if model_name == "FFN":
-            # self.head_w = nn.Sequential(nn.Linear(self.entity_dim + self.relation_dim, self.entity_dim), nn.ReLU(),
-            #                             nn.Linear(self.entity_dim, self.entity_dim))
-            self.tail_w = nn.Sequential(nn.Linear(self.entity_dim + self.relation_dim, self.entity_dim), nn.ReLU(),
-                                        nn.Linear(self.entity_dim, self.entity_dim))
+
         if model_name == 'pRotatE':
             self.modulus = nn.Parameter(torch.Tensor([[0.5 * self.embedding_range.item()]]))
         
@@ -129,118 +121,6 @@ class KGEModel(nn.Module):
                 dim=0, 
                 index=tail_part[:, 2]
             ).unsqueeze(1)
-            
-        elif mode == 'tail-batch':
-            head_part, tail_part, nbr_e, nbr_r, nbr_e_mask, nbr_r_mask = sample
-
-            batch_size, negative_sample_size = tail_part.size(0), tail_part.size(1)
-            no_of_nbrs = nbr_e.size(1)
-            
-            head = torch.index_select(
-                self.entity_embedding, 
-                dim=0, 
-                index=head_part[:, 0]
-            ).unsqueeze(1)
-
-            nbr_e_embeddings = torch.index_select(
-                self.entity_embedding,
-                dim=0,
-                index=nbr_e.view(-1)
-            ).view(batch_size, no_of_nbrs, -1)
-
-            nbr_r_embeddings = torch.index_select(
-                self.relation_embedding,
-                dim=0,
-                index=nbr_r.view(-1)
-            ).view(batch_size, no_of_nbrs, -1)
-
-            import pdb
-            pdb.set_trace()
-            
-            relation = torch.index_select(
-                self.relation_embedding,
-                dim=0,
-                index=head_part[:, 1]
-            ).unsqueeze(1)
-            
-            tail = torch.index_select(
-                self.entity_embedding, 
-                dim=0, 
-                index=tail_part.view(-1)
-            ).view(batch_size, negative_sample_size, -1)
-            
-        else:
-            raise ValueError('mode %s not supported' % mode)
-            
-        model_func = {
-            'TransE': self.TransE,
-            'DistMult': self.DistMult,
-            'ComplEx': self.ComplEx,
-            'RotatE': self.RotatE,
-            'pRotatE': self.pRotatE,
-            'FFN': self.FFN
-        }
-        
-        if self.model_name in model_func:
-            score = model_func[self.model_name](head, relation, tail, mode)
-        else:
-            raise ValueError('model %s not supported' % self.model_name)
-        
-        return score
-
-    def __forward(self, sample, mode='single'):
-        '''
-        Forward function that calculate the score of a batch of triples.
-        In the 'single' mode, sample is a batch of triple.
-        In the 'head-batch' or 'tail-batch' mode, sample consists two part.
-        The first part is usually the positive sample.
-        And the second part is the entities in the negative samples.
-        Because negative samples and positive samples usually share two elements
-        in their triple ((head, relation) or (relation, tail)).
-        '''
-
-        if mode == 'single':
-            batch_size, negative_sample_size = sample.size(0), 1
-
-            head = torch.index_select(
-                self.entity_embedding,
-                dim=0,
-                index=sample[:, 0]
-            ).unsqueeze(1)
-
-            relation = torch.index_select(
-                self.relation_embedding,
-                dim=0,
-                index=sample[:, 1]
-            ).unsqueeze(1)
-
-            tail = torch.index_select(
-                self.entity_embedding,
-                dim=0,
-                index=sample[:, 2]
-            ).unsqueeze(1)
-
-        elif mode == 'head-batch':
-            tail_part, head_part = sample
-            batch_size, negative_sample_size = head_part.size(0), head_part.size(1)
-
-            head = torch.index_select(
-                self.entity_embedding,
-                dim=0,
-                index=head_part.view(-1)
-            ).view(batch_size, negative_sample_size, -1)
-
-            relation = torch.index_select(
-                self.relation_embedding,
-                dim=0,
-                index=tail_part[:, 1]
-            ).unsqueeze(1)
-
-            tail = torch.index_select(
-                self.entity_embedding,
-                dim=0,
-                index=tail_part[:, 2]
-            ).unsqueeze(1)
 
         elif mode == 'tail-batch':
             head_part, tail_part = sample
@@ -272,8 +152,7 @@ class KGEModel(nn.Module):
             'DistMult': self.DistMult,
             'ComplEx': self.ComplEx,
             'RotatE': self.RotatE,
-            'pRotatE': self.pRotatE,
-            'FFN': self.FFN
+            'pRotatE': self.pRotatE
         }
 
         if self.model_name in model_func:
@@ -314,27 +193,6 @@ class KGEModel(nn.Module):
             re_score = re_head * re_relation - im_head * im_relation
             im_score = re_head * im_relation + im_head * re_relation
             score = re_score * re_tail + im_score * im_tail
-
-        score = score.sum(dim = 2)
-        return score
-
-    def FFN(self, head, relation, tail, mode):
-        e1r = torch.cat([head, relation], dim=-1)
-        pe2 = self.tail_w(e1r)
-        score = pe2 * tail
-
-        score = score.sum(dim = 2)
-        return score
-
-    def A2N(self, head, relation, tail, mode):
-        if mode == 'head-batch':
-            e2r = torch.cat([tail, relation], dim=-1)
-            pe1 = self.head_w(e2r)
-            score = pe1 * head
-        else:
-            e1r = torch.cat([head, relation], dim=-1)
-            pe2 = self.tail_w(e1r)
-            score = pe2 * tail
 
         score = score.sum(dim = 2)
         return score
@@ -399,20 +257,14 @@ class KGEModel(nn.Module):
 
         optimizer.zero_grad()
 
-        positive_sample, negative_sample, subsampling_weight, mode, nbr_e, nbr_r, nbr_e_mask,  nbr_r_mask = next(train_iterator)
-
+        positive_sample, negative_sample, subsampling_weight, mode = next(train_iterator)
 
         if args.cuda:
             positive_sample = positive_sample.cuda()
             negative_sample = negative_sample.cuda()
             subsampling_weight = subsampling_weight.cuda()
 
-            nbr_e = nbr_e.cuda()
-            nbr_e_mask = nbr_e_mask.cuda()
-            nbr_r = nbr_r.cuda()
-            nbr_r_mask = nbr_r_mask.cuda()
-
-        negative_score = model((positive_sample, negative_sample, nbr_e, nbr_r, nbr_e_mask,  nbr_r_mask), mode=mode)
+        negative_score = model((positive_sample, negative_sample), mode=mode)
 
         if args.negative_adversarial_sampling:
             #In self-adversarial sampling, we do not apply back-propagation on the sampling weight
